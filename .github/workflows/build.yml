@@ -1,10 +1,13 @@
 name: Build
 
-# 编译各平台二进制 → 补齐资源 → 打发布包 → 挂到 GitHub Release。
+# 编译各平台二进制 → 在 Linux 发布任务里补齐资源、打包 → 挂到 GitHub Release。
 #
-# 之所以要在 CI 里补资源：assets/font.ttf、assets/background.jpg、assets/res 被 .gitignore
+# 为什么资源要在 CI 里补：assets/font.ttf、assets/background.jpg、assets/res 被 .gitignore
 # 排除，不在仓库里。上游任一发布包的 assets/ 即为完整集合（已与本地逐文件核对一致），
 # 所以直接取 v0.8.2 的 Windows 包解出 assets/ 复用。
+#
+# 为什么打包统一放在 Linux 任务：Windows runner 的 Git Bash 没有 zip，
+# 各平台自己打包会分裂出两套命令，放一处最省心。
 #
 # 触发方式只能是 push tag —— workflow_dispatch 要求工作流存在于默认分支，
 # 而本工作流刻意放在 release 分支，避免污染 PR #901 的 diff。
@@ -79,31 +82,18 @@ jobs:
       - name: 编译
         run: cargo build --release --bin phira-main --target ${{ matrix.target }}
 
-      - name: 组装发布包
+      - name: 收集二进制
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          ver="${GITHUB_REF_NAME}"
-          stage="$PWD/.pkg-stage"
-          out="$PWD/dist/Phira-${{ matrix.name }}-${ver}.zip"
-          rm -rf "$stage"
-          mkdir -p "$stage" "$PWD/dist"
-
-          # 取上游包里被 .gitignore 排除的资源（font.ttf / background.jpg / res）
-          curl -sSL --fail -o "$PWD/upstream.zip" "$ASSET_SOURCE_URL"
-          unzip -q "$PWD/upstream.zip" 'assets/*' -d "$stage"
-
-          cp LICENSE "$stage/"
+          mkdir -p dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/phira-main.exe" "$stage/"
+            cp "target/${{ matrix.target }}/release/phira-main.exe" dist/
           else
-            cp "target/${{ matrix.target }}/release/phira-main" "$stage/"
+            cp "target/${{ matrix.target }}/release/phira-main" dist/
           fi
-
-          # 上游包是扁平结构（LICENSE / assets / phira-main.exe），不带外层目录
-          (cd "$stage" && zip -qr9 "$out" .)
-          ls -la "$PWD/dist"
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -155,17 +145,16 @@ jobs:
         working-directory: phira
         run: cargo ndk -t ${{ matrix.abi }} --platform 35 build --release
 
-      - name: 打包 libphira.so
+      - name: 收集 libphira.so
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          ver="${GITHUB_REF_NAME}"
-          mkdir -p "$PWD/dist"
+          mkdir -p dist
           so=$(find . -path "*/${{ matrix.target }}/release/libphira.so" -print -quit)
           test -n "$so"
-          zip -qj "$PWD/dist/Phira-android-${{ matrix.abi }}-${ver}-so.zip" "$so"
-          ls -la "$PWD/dist"
+          cp "$so" dist/
+          ls -la dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -174,16 +163,45 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: 发布
+    name: 组装并发布
     needs: [desktop, android]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - name: 下载所有二进制
+        uses: actions/download-artifact@v4
         with:
-          path: dist
-          merge-multiple: true
+          path: artifacts
 
-      - name: 列出待上传文件
+      - name: 补齐资源并打包
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          out="$PWD/dist"
+          rm -rf upstream stage
+          mkdir -p upstream "$out" stage
+
+          # 上游包是扁平结构（LICENSE / assets / phira-main.exe），资源部分直接复用
+          curl -sSL --fail -o upstream.zip "$ASSET_SOURCE_URL"
+          unzip -q upstream.zip 'assets/*' 'LICENSE' -d upstream
+
+          for d in artifacts/*/; do
+            name=$(basename "$d")
+            case "$name" in
+              android-*)
+                abi="${name#android-}"
+                (cd "$d" && zip -qj "$out/Phira-android-${abi}-${ver}-so.zip" libphira.so)
+                ;;
+              *)
+                stage_dir="stage/$name"
+                mkdir -p "$stage_dir"
+                cp -r upstream/assets upstream/LICENSE "$stage_dir/"
+                cp "$d"* "$stage_dir/"
+                (cd "$stage_dir" && zip -qr9 "$out/Phira-${name}-${ver}.zip" .)
+                ;;
+            esac
+          done
+
+      - name: 列出发布包
         run: ls -la dist
 
       - name: 创建 / 更新 Release
