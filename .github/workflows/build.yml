@@ -4,10 +4,17 @@ name: Build
 #
 # 为什么资源要在 CI 里补：assets/font.ttf、assets/background.jpg、assets/res 被 .gitignore
 # 排除，不在仓库里。上游任一发布包的 assets/ 即为完整集合（已与本地逐文件核对一致），
-# 所以直接取 v0.8.2 的 Windows 包解出 assets/ 复用。
+# 所以直接取上游 Windows 包解出 assets/ 复用。
 #
 # 为什么打包统一放在 Linux 任务：Windows runner 的 Git Bash 没有 zip，
 # 各平台自己打包会分裂出两套命令，放一处最省心。
+#
+# 为什么 Android 产物是「替换 so 的 APK」而不是自己编译的 APK：
+# 本仓库没有 Android 前端工程（无 gradle / manifest / Java 源码），官方 APK 是唯一可用的
+# 宿主外壳。官方文档 phira-docs《Android》给的就是这条路子：拿官方 APK 换 lib/<abi>/libphira.so
+# 后重新签名。换上去的 so 必须导出 quad_native.QuadNative 的全套 JNI 符号，否则
+# System.loadLibrary 后首次调用就会 UnsatisfiedLinkError —— 其中 preprocessInput 上游
+# miniquad 模板不带、官方私有实现不开源，由 phira/src/lib.rs 补一个空实现兜住。
 #
 # 触发方式只能是 push tag —— workflow_dispatch 要求工作流存在于默认分支，
 # 而本工作流刻意放在 release 分支，避免污染 PR #901 的 diff。
@@ -19,7 +26,13 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # 上游发布包：既提供被 .gitignore 排除的 assets/，也提供 Android 宿主 APK
+  UPSTREAM_TAG: v0.8.2
   ASSET_SOURCE_URL: https://github.com/TeamFlos/phira/releases/download/v0.8.2/Phira-windows-x86_64-v0.8.2.zip
+  # APK 重签名用的 keystore（keytool 生成，别名 phira，口令 phira-noise，有效期 10000 天）。
+  # 明文公开无风险：这只是个人 fork 的非官方测试包，keystore 里没有任何敏感信息。
+  # 固定下来是为了让每次构建的签名一致，从而可以覆盖安装升级。
+  KEYSTORE_B64: "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"
 
 permissions:
   contents: write
@@ -145,15 +158,41 @@ jobs:
         working-directory: phira
         run: cargo ndk -t ${{ matrix.abi }} --platform 35 build --release
 
-      - name: 收集 libphira.so
+      # 官方 APK 是唯一可用的宿主外壳：本仓库没有 Android 前端工程。
+      # 换 so 后必须重新签名才能安装，顺序固定为「替换 → zipalign → apksigner」。
+      - name: 组装并签名 APK
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
-          mkdir -p dist
+          abi="${{ matrix.abi }}"
+          ver="${GITHUB_REF_NAME}"
+          bt="$ANDROID_HOME/build-tools/33.0.2"
+
           so=$(find . -path "*/${{ matrix.target }}/release/libphira.so" -print -quit)
           test -n "$so"
-          cp "$so" dist/
+          echo "so: $so ($(stat -c%s "$so") bytes)"
+
+          curl -sSL --fail -o "$RUNNER_TEMP/base.apk" \
+            "https://github.com/TeamFlos/phira/releases/download/${UPSTREAM_TAG}/Phira-android-${abi}-${UPSTREAM_TAG}.apk"
+          echo "base.apk: $(stat -c%s "$RUNNER_TEMP/base.apk") bytes"
+
+          mkdir -p dist
+          python3 ci/make_apk.py "$RUNNER_TEMP/base.apk" "$so" "$abi" "$RUNNER_TEMP/unsigned.apk"
+
+          # -p 让未压缩的 .so 按页对齐（Android 15 起要求 16KB 页），4 是其余条目的基础对齐
+          "$bt/zipalign" -f -p 4 "$RUNNER_TEMP/unsigned.apk" "$RUNNER_TEMP/aligned.apk"
+
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/ks.jks"
+          "$bt/apksigner" sign \
+            --ks "$RUNNER_TEMP/ks.jks" \
+            --ks-key-alias phira \
+            --ks-pass pass:phira-noise \
+            --key-pass pass:phira-noise \
+            --out "dist/Phira-android-${abi}-${ver}.apk" \
+            "$RUNNER_TEMP/aligned.apk"
+
+          "$bt/apksigner" verify --print-certs "dist/Phira-android-${abi}-${ver}.apk"
           ls -la dist
 
       - uses: actions/upload-artifact@v4
@@ -190,8 +229,9 @@ jobs:
             name=$(basename "$d")
             case "$name" in
               android-*)
+                # 已经是签好名的完整 APK，直接用
                 abi="${name#android-}"
-                (cd "$d" && zip -qj "$out/Phira-android-${abi}-${ver}-so.zip" libphira.so)
+                cp "$d"*.apk "$out/Phira-android-${abi}-${ver}.apk"
                 ;;
               *)
                 stage_dir="stage/$name"
@@ -212,8 +252,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+          files=(dist/*)
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/*.zip --clobber
+            gh release upload "$tag" "${files[@]}" --clobber
           else
-            gh release create "$tag" dist/*.zip --title "Phira $tag" --notes-file ci/release-notes.md
+            gh release create "$tag" "${files[@]}" --title "Phira $tag" --notes-file ci/release-notes.md
           fi

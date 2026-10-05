@@ -421,6 +421,30 @@ pub extern "C" fn Java_quad_1native_QuadNative_setInputText(_env: EnvUnowned, _c
     INPUT_TEXT.lock().unwrap().1 = Some(text.to_string());
 }
 
+/// Android 宿主（`quad_native.QuadSurface`）会调用这个符号做输入预处理。
+/// 上游 miniquad 模板里没有它——它是官方 Android 前端私有加的一层钩子，原生实现不开源，
+/// 因此开源构建出的 `libphira.so` 缺这个导出，替换进官方 APK 后会抛
+/// `UnsatisfiedLinkError: No implementation found for ... preprocessInput`。
+///
+/// 这里放一个空实现把符号补齐。触摸/按键的真正通路是宿主直接调用的
+/// `surfaceOnTouch` / `surfaceOnKeyDown` / `surfaceOnKeyUp` / `surfaceOnCharacter`，
+/// 都不经过本函数，所以留空不影响操作。
+///
+/// 参数类型按 JNI 约定：`jfloat` = `f32`，`jboolean` = `u8`；
+/// 函数体为空，因此即使 Java 端的实际声明与签名略有出入也不会读到垃圾数据。
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_quad_1native_QuadNative_preprocessInput(
+    _env: *mut std::ffi::c_void,
+    _class: *const std::ffi::c_void,
+    _motion_event: *mut std::ffi::c_void,
+    _x: f32,
+    _y: f32,
+    _flag: u8,
+    _flag2: u8,
+) {
+}
+
 /// Credentials obtained from the native HYKB (好游快爆) login SDK.
 pub struct HykbCredential {
     /// SDK result code: 0 on success, otherwise an error / user cancellation.

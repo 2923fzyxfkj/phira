@@ -55,18 +55,26 @@ Phigros 4.0.0 起，谱面新增了顶层字段 `blockAreaList`（玩家俗称�
 | `Phira-windows-x86_64-v0.9.0.zip` | Windows x86_64 | 解压后运行 `phira-main.exe` |
 | `Phira-windows-aarch64-v0.9.0.zip` | Windows on ARM | 解压后运行 `phira-main.exe` |
 | `Phira-linux-x86_64-v0.9.0.zip` | Linux x86_64 | 解压后运行 `phira-main` |
-| `Phira-android-arm64-v8a-v0.9.0-so.zip` | Android arm64-v8a | **仅 `libphira.so`**，非安装包，需自行替换进 APK |
-| `Phira-android-armeabi-v7a-v0.9.0-so.zip` | Android armeabi-v7a | 同上 |
+| `Phira-android-arm64-v8a-v0.9.0.apk` | Android arm64-v8a | 可直接安装，**需先卸载官方版**（签名不同） |
+| `Phira-android-armeabi-v7a-v0.9.0.apk` | Android armeabi-v7a | 同上 |
 
-> ⚠️ Android 只有动态库 `libphira.so`。Phira 的 Android 应用外壳（含 `quad_native`）不在
-> `TeamFlos/phira` 仓库内，因此无法从源码直接产出 APK。官方构建指南的做法是拿官方 APK
-> 替换 `lib/<abi>/libphira.so` 后重新签名（见 phira-docs 的《Android》章节）。
+> ⚠️ Android 包是**拿官方 APK 换掉 `lib/<abi>/libphira.so` 后重新签名**得到的。
+> `TeamFlos/phira` 仓库里没有 Android 前端工程（无 gradle / manifest / Java 源码），
+> 官方 APK 是唯一可用的宿主外壳，这也正是官方构建文档《Android》给出的做法。
+> 因此有几点要注意：
+> - 用的是我们自己的证书：**包名与官方相同、签名不同**，安装前必须先卸载官方版。
+> - APK 内的版本信息仍是上游的 `0.8.2 (39)`，只有 `libphira.so` 换成了本次的 v0.9.0 构建。
+> - 换上去的 so 补齐了宿主所需的全部 `quad_native.QuadNative` JNI 符号。
 >
 > ⚠️ 本版本**未提供 HMOS（OpenHarmony）产物**。构建 HMOS 需要华为 DevEco Studio / HarmonyOS
 > Command Line Tools（NDK ≥ API 20）与 `phira-ohos` 前端工程，不在本次构建环境内。
 
 ## 已知差异
 
+- Android 包替换进官方 APK 的 `libphira.so` 里，`quad_native.QuadNative.preprocessInput`
+  是空实现。开源构建与官方 APK 的 so 符号差异只有这一个（其余 26 个均一致），而它不参与
+  触摸/按键主通路——宿主真正调的是 `surfaceOnTouch` / `surfaceOnKey*`，所以留空不影响操作。
+  上游若日后开源 Android 前端，这个空实现即可删除。
 - 原版在「有手指被噪域挡住」时会对音乐做低通模糊（`cutoff` 1500Hz 渐变到 22000Hz）。
   这需要改动音频后端 `sasa`，本次未实现，`music_unaffected` 开关暂为占位。
 - 噪域的着色器与贴图取自原版游戏资源，与 Phigros 官方素材一致。
