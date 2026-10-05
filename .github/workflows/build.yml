@@ -1,21 +1,25 @@
 name: Build
 
-# CI 只负责编译各平台二进制。资源文件（assets/font.ttf、assets/background.jpg、
-# assets/res）被 .gitignore 排除，不在仓库里，所以在本地组装发布包。
+# 编译各平台二进制 → 补齐资源 → 打发布包 → 挂到 GitHub Release。
+#
+# 之所以要在 CI 里补资源：assets/font.ttf、assets/background.jpg、assets/res 被 .gitignore
+# 排除，不在仓库里。上游任一发布包的 assets/ 即为完整集合（已与本地逐文件核对一致），
+# 所以直接取 v0.8.2 的 Windows 包解出 assets/ 复用。
+#
+# 触发方式只能是 push tag —— workflow_dispatch 要求工作流存在于默认分支，
+# 而本工作流刻意放在 release 分支，避免污染 PR #901 的 diff。
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: '版本号，用于产物命名（例如 v0.9.0）'
-        required: false
-        default: 'v0.9.0'
   push:
     tags:
       - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
+  ASSET_SOURCE_URL: https://github.com/TeamFlos/phira/releases/download/v0.8.2/Phira-windows-x86_64-v0.8.2.zip
+
+permissions:
+  contents: write
 
 jobs:
   desktop:
@@ -48,9 +52,8 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
-      # prpr-avc/build.rs 会无条件发出 `cargo:rustc-link-lib=z`，
-      # 而 Windows MSVC 环境不自带 zlib，链接会报 LNK1181: cannot open input file 'z.lib'。
-      # 这里从源码编一个静态 zlib，把产物改名成 z.lib 加进 LIB 搜索路径。
+      # prpr-avc/build.rs 无条件发出 `cargo:rustc-link-lib=z`，Windows MSVC 没有 zlib，
+      # 链接会报 LNK1181: cannot open input file 'z.lib'。这里从源码编静态 zlib 补上。
       - name: 准备 zlib（Windows MSVC）
         if: runner.os == 'Windows'
         shell: pwsh
@@ -76,24 +79,36 @@ jobs:
       - name: 编译
         run: cargo build --release --bin phira-main --target ${{ matrix.target }}
 
-      - name: 收集产物
+      - name: 组装发布包
         shell: bash
         run: |
           set -euo pipefail
-          ver="${{ github.event.inputs.version || github.ref_name }}"
-          out="artifacts/Phira-${{ matrix.name }}-${ver}"
-          mkdir -p "$out"
+          cd "$GITHUB_WORKSPACE"
+          ver="${GITHUB_REF_NAME}"
+          stage="$PWD/.pkg-stage"
+          out="$PWD/dist/Phira-${{ matrix.name }}-${ver}.zip"
+          rm -rf "$stage"
+          mkdir -p "$stage" "$PWD/dist"
+
+          # 取上游包里被 .gitignore 排除的资源（font.ttf / background.jpg / res）
+          curl -sSL --fail -o "$PWD/upstream.zip" "$ASSET_SOURCE_URL"
+          unzip -q "$PWD/upstream.zip" 'assets/*' -d "$stage"
+
+          cp LICENSE "$stage/"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/${{ matrix.target }}/release/phira-main.exe" "$out/"
+            cp "target/${{ matrix.target }}/release/phira-main.exe" "$stage/"
           else
-            cp "target/${{ matrix.target }}/release/phira-main" "$out/"
+            cp "target/${{ matrix.target }}/release/phira-main" "$stage/"
           fi
-          ls -laR artifacts
+
+          # 上游包是扁平结构（LICENSE / assets / phira-main.exe），不带外层目录
+          (cd "$stage" && zip -qr9 "$out" .)
+          ls -la "$PWD/dist"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: artifacts/
+          path: dist/
           if-no-files-found: error
 
   android:
@@ -140,20 +155,45 @@ jobs:
         working-directory: phira
         run: cargo ndk -t ${{ matrix.abi }} --platform 35 build --release
 
-      - name: 收集产物
+      - name: 打包 libphira.so
         shell: bash
         run: |
           set -euo pipefail
-          ver="${{ github.event.inputs.version || github.ref_name }}"
-          out="artifacts/Phira-android-${{ matrix.abi }}-${ver}"
-          mkdir -p "$out"
+          cd "$GITHUB_WORKSPACE"
+          ver="${GITHUB_REF_NAME}"
+          mkdir -p "$PWD/dist"
           so=$(find . -path "*/${{ matrix.target }}/release/libphira.so" -print -quit)
           test -n "$so"
-          cp "$so" "$out/"
-          ls -laR artifacts
+          zip -qj "$PWD/dist/Phira-android-${{ matrix.abi }}-${ver}-so.zip" "$so"
+          ls -la "$PWD/dist"
 
       - uses: actions/upload-artifact@v4
         with:
           name: android-${{ matrix.abi }}
-          path: artifacts/
+          path: dist/
           if-no-files-found: error
+
+  release:
+    name: 发布
+    needs: [desktop, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 列出待上传文件
+        run: ls -la dist
+
+      - name: 创建 / 更新 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.zip --clobber
+          else
+            gh release create "$tag" dist/*.zip --title "Phira $tag" --notes-file ci/release-notes.md
+          fi
