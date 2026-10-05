@@ -48,6 +48,27 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
+      # prpr-avc/build.rs 会无条件发出 `cargo:rustc-link-lib=z`，
+      # 而 Windows MSVC 环境不自带 zlib，链接会报 LNK1181: cannot open input file 'z.lib'。
+      # 这里从源码编一个静态 zlib，把产物改名成 z.lib 加进 LIB 搜索路径。
+      - name: 准备 zlib（Windows MSVC）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $arch = if ('${{ matrix.target }}'.StartsWith('aarch64')) { 'ARM64' } else { 'x64' }
+          git clone --depth 1 -b v1.3.1 https://github.com/madler/zlib.git "$env:RUNNER_TEMP\zlib-src"
+          cmake -S "$env:RUNNER_TEMP\zlib-src" -B "$env:RUNNER_TEMP\zlib-build" -A $arch `
+            -DZLIB_BUILD_SHARED=OFF -DZLIB_BUILD_STATIC=ON
+          cmake --build "$env:RUNNER_TEMP\zlib-build" --config Release
+          $lib = Get-ChildItem "$env:RUNNER_TEMP\zlib-build" -Recurse -Filter '*.lib' |
+            Where-Object { $_.FullName -notmatch '\\CMakeFiles\\' } |
+            Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $lib) { throw 'zlib build produced no .lib' }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\zlib-lib" | Out-Null
+          Copy-Item $lib.FullName "$env:RUNNER_TEMP\zlib-lib\z.lib" -Force
+          "LIB=$env:RUNNER_TEMP\zlib-lib;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "z.lib <- $($lib.FullName) ($($lib.Length) bytes)"
+
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
